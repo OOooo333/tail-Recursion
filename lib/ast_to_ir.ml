@@ -217,13 +217,37 @@ let rec gen_stmt env stmt : instr list =
   | EmptyStmt -> []
 
 
-(* --- 4. 顶层转换函数 --- *)
+(* --- 尾递归优化辅助 --- *)
 
-(* 检查语句是否为尾递归调用 *)
-let is_tail_recursive_call fname params stmt =
-  match stmt with
-  | Ast.Return (Some (Ast.Call (name, args))) when name = fname && List.length args = List.length params -> Some args
+(* 判断一个 IR 指令是否为对本函数的尾递归调用 *)
+let is_tail_recursive_call func_name instr =
+  match instr with
+  | Call { dest; name; args } when name = func_name -> Some (dest, args)
   | _ -> None
+
+(* 对函数体 IR 指令列表做尾递归优化 *)
+let tailcall_optimize_instrs func_name param_unames instrs =
+  let rec aux acc = function
+    | [] -> List.rev acc
+    | Call { dest; name; args } :: Return (Some ret_op) :: tl
+      when name = func_name && (match dest with Some d -> d = ret_op | None -> false) ->
+        (* 尾递归: call + return *)
+        let assigns =
+          List.map2 (fun pname arg -> Move { dest = Name pname; src = arg }) param_unames args
+        in
+        aux (List.rev assigns @ (Jump "tailrec_entry") :: acc) tl
+    | Call { dest; name; args } :: Return None :: tl
+      when name = func_name && dest = None ->
+        let assigns =
+          List.map2 (fun pname arg -> Move { dest = Name pname; src = arg }) param_unames args
+        in
+        aux (List.rev assigns @ (Jump "tailrec_entry") :: acc) tl
+    | hd :: tl -> aux (hd :: acc) tl
+  in
+  aux [] instrs
+
+
+(* --- 4. 顶层转换函数 --- *)
 
 (* 将单个 AST 函数定义转换为 IR 函数定义 *)
 let gen_func_def (fdef: Ast.func_def) : ir_func =
@@ -232,31 +256,12 @@ let gen_func_def (fdef: Ast.func_def) : ir_func =
   let param_unames =
     List.map (fun p -> match find_var_unique env p.pname with Some u -> u | None -> assert false) fdef.params
   in
-  let label_entry = "tailrec_entry_" ^ fdef.fname in
-  let transform_tailrec stmt =
-    match is_tail_recursive_call fdef.fname fdef.params stmt with
-    | Some args ->
-        (* 生成参数赋值和跳转 *)
-        let arg_ops, arg_instrs_list = List.map (gen_expr env) args |> List.split in
-        let all_arg_instrs = List.flatten arg_instrs_list in
-        let moves =
-          List.map2 (fun uname op -> Move { dest = Name uname; src = op }) param_unames arg_ops
-        in
-        all_arg_instrs @ moves @ [Jump label_entry]
-    | None ->
-        gen_stmt env stmt
-  in
+  let body_instrs = gen_stmt env fdef.body in
+  (* 尾递归优化 *)
   let body_instrs =
-    match fdef.body with
-    | Block stmts when stmts <> [] ->
-        let last_stmt = List.hd (List.rev stmts) in
-        let prefix = List.rev (List.tl (List.rev stmts)) in
-        let prefix_instrs = List.map (gen_stmt env) prefix |> List.flatten in
-        [Label label_entry]
-        @ prefix_instrs
-        @ transform_tailrec last_stmt
-    | _ ->
-        [Label label_entry] @ gen_stmt env fdef.body
+    let entry_label = Label "tailrec_entry" in
+    let optimized = tailcall_optimize_instrs fdef.fname param_unames body_instrs in
+    entry_label :: optimized
   in
   {
     name = fdef.fname;

@@ -54,7 +54,6 @@ let string_of_binop = function
 let string_of_unop = function
   | OpNeg -> "-"
   | OpNot -> "!"
-  | OpPlus -> "+"   (* 补全一元加号 *)
 
 (* --- 2. 环境管理辅助函数 --- *)
 
@@ -128,7 +127,7 @@ let rec check_expr env expr : typ =
   | UnOp (op, e) ->
       let typ = check_expr env e in
       (match op, typ with
-      | (OpNeg | OpNot | OpPlus), IntType -> IntType
+      | (OpNeg | OpNot), IntType -> IntType
       | _, _ -> error "一元运算符只能作用于 int 类型")
 
   (* 适配: BinOp 构造函数 *)
@@ -270,7 +269,6 @@ let check_program (prog: Ast.comp_unit) =
     (* 第二遍：逐个检查每个函数体内部的逻辑 *)
     List.iter (check_func_def env_with_funcs) prog;
     
-    print_endline "语义分析通过！"
   with
   | SemanticError msg ->
     Printf.eprintf "语义错误: %s\n" msg;
